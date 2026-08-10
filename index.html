@@ -2680,6 +2680,7 @@ const STOCK_SETS = {
 function blankPremises(n){
   const use = (KINDS[n.kind] && KINDS[n.kind].svc) || "";
   return { keeper: { name:"", note:"" }, folk: [], says: [],
+           ask: { skill:"persuasion", dc:10, step:3 },
            stock: (STOCK_SETS[use] || []).slice(), price: 1, notes: "" };
 }
 
@@ -2737,6 +2738,21 @@ function premisesPanel(n){
     <div class="field" style="margin:-2px 0 10px"><input data-fknote="${i}" type="text" value="${esc(f.note||"")}" placeholder="A line about them" style="font-family:var(--serif);font-size:12.5px"></div>`).join("")}
     <button class="btn wide" id="pr-addfolk">Add somebody</button>
 
+    <p class="grouplab">Asking around</p>
+    <div class="row2">
+      <div class="field"><label>Skill</label><select id="pr-asksk">${
+        ["persuasion","insight","deception","intimidation","investigation","religion","history","performance"]
+          .map(k=>`<option value="${k}" ${k===((p.ask&&p.ask.skill)||"persuasion")?"selected":""}>${k[0].toUpperCase()+k.slice(1)}</option>`).join("")
+      }</select></div>
+      <div class="field"><label>First ask</label><input id="pr-askdc" class="mono" type="number" min="1" max="30" value="${(p.ask&&p.ask.dc)||10}"></div>
+    </div>
+    <div class="field"><label>And harder by</label><input id="pr-askstep" class="mono" type="number" min="0" max="10" value="${(p.ask&&p.ask.step)??3}"></div>
+    <p class="empty-note" style="margin:-6px 0 10px;font-size:11.5px">${(()=>{
+      const dc=(p.ask&&p.ask.dc)||10, st=(p.ask&&p.ask.step)??3;
+      const o=n=>Math.max(0,Math.min(100,Math.round((21-((dc+st*n)-5))/20*100)));
+      return `A trained carrier gets the first at ${o(0)}%, then ${o(1)}%, ${o(2)}%, ${o(3)}%. Resets each real day.`;
+    })()}</p>
+
     <p class="grouplab">What you can learn here</p>
     ${(p.says||[]).map((t,i)=>`<div class="folkrow">
       <input data-say="${i}" type="text" value="${esc(t)}" placeholder="Something they'll tell you" style="grid-column:1/3;font-family:var(--serif)">
@@ -2778,6 +2794,12 @@ function wirePremises(n){
   $("#pr-kname").oninput = e=>{ (p.keeper=p.keeper||{}).name = e.target.value; touch(); };
   $("#pr-knote").oninput = e=>{ (p.keeper=p.keeper||{}).note = e.target.value; touch(); };
   $("#pr-notes").oninput = e=>{ p.notes = e.target.value; touch(); };
+  const asksk = $("#pr-asksk");
+  if(asksk) asksk.onchange = e=>{ (p.ask=p.ask||{}).skill = e.target.value; touch(); };
+  numField($("#pr-askdc"),   { min:1, max:30, get:()=>(p.ask&&p.ask.dc)||10,
+                               set:v=>{ (p.ask=p.ask||{}).dc = v; }, done:()=>re() });
+  numField($("#pr-askstep"), { min:0, max:10, get:()=>(p.ask&&p.ask.step)??3,
+                               set:v=>{ (p.ask=p.ask||{}).step = v; }, done:()=>re() });
   numField($("#pr-price"), { min:0.25, max:4, get:()=>p.price||1, set:v=>p.price=v, done:()=>re() });
 
   const pane = $("#pane-inspect");
@@ -2881,8 +2903,24 @@ function dcRung(dc){
   return out;
 }
 
+/* When a failed search may be tried again. Not the same question as
+   whether it can be found twice — `once` covers that. This is: you
+   looked, you missed, how long before looking again is worth anything.
+
+   Without this every difficulty is decorative, because the answer is
+   always "roll until you pass". */
+const RETRY = [
+  ["never", "Never — one attempt, and that's the answer"],
+  ["visit", "Once each time you come to town"],
+  ["day",   "Once a day"],
+  ["week",  "Once a week"],
+  ["month", "Once a month"],
+  ["free",  "As often as you like"]
+];
+const retryLabel = k => (RETRY.find(r=>r[0]===k) || RETRY[0])[1];
+
 function blankFind(){
-  return { skill:"investigation", dc:12, passive:false, once:true,
+  return { skill:"investigation", dc:12, passive:false, once:true, retry:"visit",
            what:"", gives:{ xp:0 }, fail:"" };
 }
 
@@ -2909,7 +2947,14 @@ function findsPanel(n){
         <div class="dcline"><b>${rung.dc}+ · ${esc(rung.name)}</b> — ${esc(rung.note)}</div>
         <div class="odds">${odds.map(o=>
           `<span><i>${o.label}</i>${o.passive && f.passive ? "finds it without looking" : o.roll+"%"}</span>`).join("")}</div>
-        <label class="check" style="margin:2px 0 10px"><input type="checkbox" data-fdpass="${i}" ${f.passive?"checked":""}> Found without looking, if their passive score beats it</label>
+        <label class="check" style="margin:2px 0 8px"><input type="checkbox" data-fdpass="${i}" ${f.passive?"checked":""}> Found without looking, if their passive score beats it</label>
+        <div class="field"><label>If they miss it, try again</label><select data-fdretry="${i}">${
+          RETRY.map(([k,label])=>`<option value="${k}" ${k===(f.retry||"visit")?"selected":""}>${esc(label)}</option>`).join("")
+        }</select></div>
+        <p class="empty-note" style="margin:-6px 0 10px;font-size:11.5px">${
+          (f.retry||"visit")==="never" ? "One roll decides it forever. Good for a thing that is either noticed or isn't."
+          : (f.retry||"visit")==="free" ? "No limit — so the difficulty only decides how long it takes, not whether it happens."
+          : `A carrier gets one attempt ${retryLabel(f.retry||"visit").toLowerCase().replace(/^once /,"")}. Real days, not in-world ones.`}</p>
 
         <div class="field"><label>What they find</label><textarea data-fdwhat="${i}" placeholder="A loose board under the third step, and under that a tin.">${esc(f.what||"")}</textarea></div>
         <div class="field"><label>And if they don't</label><input data-fdfail="${i}" type="text" value="${esc(f.fail||"")}" placeholder="Nothing but dust. (optional)"></div>
@@ -2962,6 +3007,7 @@ function wireFinds(n){
                    live:()=>refreshFind(n, i), done:()=>re() });
   });
   pane.querySelectorAll("[data-fdpass]").forEach(el=>el.onchange = e=>{ F(e.target.dataset.fdpass).passive = e.target.checked; re(); });
+  pane.querySelectorAll("[data-fdretry]").forEach(el=>el.onchange = e=>{ F(e.target.dataset.fdretry).retry = e.target.value; re(); });
   pane.querySelectorAll("[data-fdwhat]").forEach(el=>el.oninput = e=>{ F(e.target.dataset.fdwhat).what = e.target.value; touch(); });
   pane.querySelectorAll("[data-fdfail]").forEach(el=>el.oninput = e=>{ F(e.target.dataset.fdfail).fail = e.target.value; touch(); });
   pane.querySelectorAll("[data-fdxp]").forEach(el=>{
