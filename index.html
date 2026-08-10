@@ -370,6 +370,9 @@
   }
   .shelfrow .pb:hover{border-color:var(--ink-soft);color:var(--ink)}
   .shelfrow .pb.drop:hover{border-color:var(--lead);color:var(--lead)}
+  .fp{cursor:pointer}
+  .fph{fill:var(--paper-lit);stroke:var(--lead);stroke-width:1.4;cursor:grab;vector-effect:non-scaling-stroke}
+  .fph:active{cursor:grabbing}
   .findbox{
     border:1px solid var(--rule);border-left:2px solid var(--lead);border-radius:2px;
     padding:11px 11px 9px;margin-bottom:10px;background:rgba(255,255,255,.16);
@@ -1295,6 +1298,34 @@ function render(){
   for(const n of doc.nodes){
     const kd = KINDS[n.kind]||KINDS.stone, hex = regionHex(n.region);
     const on = sel&&sel.kind==="node"&&sel.id===n.id;
+
+    /* inside a plan a building is drawn at the size it is */
+    if(hasFootprint(n)){
+      const f = footprintOf(n), ppm = doc.ppm||8;
+      const wpx = f.w*ppm, dpx = f.d*ppm;
+      const g = `translate(${n.x} ${n.y}) rotate(${f.rot||0})`;
+      /* the glyph rides inside, at screen size, but never wider than the
+         building it stands in */
+      const gs = Math.min(inv, wpx/26, dpx/26);
+      s += `<g transform="${g}">`;
+      s += `<rect class="fp" data-node="${n.id}" x="${-wpx/2}" y="${-dpx/2}" width="${wpx}" height="${dpx}"
+              rx="${Math.min(wpx,dpx)*0.06}" fill="${hex}" fill-opacity="${on?.42:.3}"
+              stroke="${on?"var(--lead)":"var(--ink)"}" stroke-width="${(on?2:1.3)*inv}"/>`;
+      if(gs > 0.0001) s += `<g transform="scale(${gs})" style="pointer-events:none">${kd.draw(hex)}</g>`;
+      if(on){
+        /* a corner to pull, and a stalk to turn it by */
+        s += `<rect class="fph" data-fp="${n.id}" x="${wpx/2-5*inv}" y="${dpx/2-5*inv}"
+                width="${10*inv}" height="${10*inv}" rx="${2*inv}"/>`;
+        s += `<line x1="0" y1="${-dpx/2}" x2="0" y2="${-dpx/2-16*inv}" stroke="var(--lead)"
+                stroke-width="${1.2*inv}" opacity=".8"/>`;
+        s += `<circle class="fph" data-frot="${n.id}" cx="0" cy="${-dpx/2-16*inv}" r="${5*inv}"/>`;
+      }
+      s += `</g>`;
+      if(n.name) s += `<g transform="translate(${n.x} ${n.y+dpx/2}) scale(${inv})">
+        <text class="nodename" y="15" font-size="11">${esc(n.name)}</text></g>`;
+      continue;
+    }
+
     s += `<g transform="translate(${n.x} ${n.y}) scale(${inv})">`;
     if(on) s += `<circle class="selring" r="17"/>`;
     if(connectFrom===n.id||(rule&&rule.fromId===n.id)) s += `<circle class="selring" r="20" stroke-dasharray="4 3"/>`;
@@ -1987,6 +2018,28 @@ svg.addEventListener("pointermove", e=>{
       if(!r.milesLocked) r.miles = roadDrawnMiles(r);
       render(); return;
     }
+    if(drag.mode==="fp"){
+      const n = nodeById(drag.id); if(!n) return;
+      const ppm = doc.ppm||8;
+      const a = -(n.rot||0)*Math.PI/180, ca=Math.cos(a), sa=Math.sin(a);
+      const dx = pointer.x-n.x, dy = pointer.y-n.y;
+      /* into the building's own frame, so a turned building still sizes
+         along its own walls */
+      const lx = dx*ca - dy*sa, ly = dx*sa + dy*ca;
+      const step = e.shiftKey ? 1 : 0.5;               // whole units with Shift
+      const q = v => Math.max(1, Math.round(v/step)*step);
+      n.w = q(Math.abs(lx)*2/ppm);
+      n.d = q(Math.abs(ly)*2/ppm);
+      drag.moved = true; render(); return;
+    }
+    if(drag.mode==="frot"){
+      const n = nodeById(drag.id); if(!n) return;
+      const a = Math.atan2(pointer.y-n.y, pointer.x-n.x);
+      let deg = drag.rot0 + (a - drag.ang0)*180/Math.PI;
+      if(e.shiftKey) deg = Math.round(deg/15)*15;      // to the nearest 15°
+      n.rot = Math.round(((deg%360)+360)%360);
+      drag.moved = true; render(); return;
+    }
     if(drag.mode==="sp"){
       const sh = shapeById(drag.id); if(!sh) return;
       sh.pts[drag.i] = { x:Math.round(pointer.x), y:Math.round(pointer.y) };
@@ -2041,6 +2094,7 @@ function endPointer(e){
     if(drag.mode==="aim"){ fixDistance(); drag=null; svg.classList.remove("panning"); return; }
     if(drag.mode==="node" && drag.moved){ recomputeUnlocked(drag.id); touch(); }
     if((drag.mode==="rp"||drag.mode==="sp") && drag.moved){ touch(); renderPane(true); }
+    if((drag.mode==="fp"||drag.mode==="frot") && drag.moved){ touch(); renderPane(true); }
     if(drag.mode==="pan"){
       const still = Math.hypot(e.clientX-drag.sx, e.clientY-drag.sy) < 6;
       if(still && drag.tap){ const t = drag.tap; drag=null; svg.classList.remove("panning"); t(); return; }
@@ -2488,6 +2542,51 @@ const regionOptions = cur=>doc.regions.map(r=>`<option value="${r.id}" ${r.id===
    place will kill whoever walks into it. The verdict updates as you
    add things, so "two bandits" stops being a guess. */
 
+
+/* ══════════════════════════════════════════════════════════════
+   FOOTPRINTS — buildings at the size they actually are
+
+   A marker on the survey is a symbol: a town is a square whatever its
+   size, because at fourteen miles to the inch a town IS a dot. Inside a
+   town plan that stops being true. At six yards to the pixel a smithy
+   drawn as a constant-size glyph comes out about a yard and a half
+   across, standing beside a street twenty yards wide.
+
+   So plan markers carry a footprint in the plan's own units, drawn to
+   scale, and can be sized and turned. The defaults below are roughly
+   what these buildings were: a house is ten by eight, a great hall is
+   twenty-four by sixteen, a well is three by three.
+   ══════════════════════════════════════════════════════════════ */
+const FOOTPRINT = {
+  hall:{w:24,d:16}, house:{w:10,d:8},  inn:{w:16,d:12},  smith:{w:12,d:9},
+  temple:{w:20,d:13}, market:{w:18,d:18}, store:{w:11,d:9}, stable:{w:18,d:10},
+  gate:{w:8,d:5},   tower:{w:8,d:8},   well:{w:3,d:3},   statue:{w:4,d:4},
+  apothecary:{w:10,d:8}, healer:{w:12,d:9}, archive:{w:18,d:12}, reeve:{w:14,d:11},
+  office:{w:14,d:10}, trainer:{w:14,d:12}, fence:{w:9,d:7}, ruinlet:{w:12,d:10}
+};
+const DEFAULT_FP = { w:12, d:9 };
+
+function footprintOf(n){
+  const base = FOOTPRINT[n.kind] || DEFAULT_FP;
+  return { w: n.w != null ? n.w : base.w,
+           d: n.d != null ? n.d : base.d,
+           rot: n.rot || 0 };
+}
+/* Only inside a plan. On the survey a place is a symbol, not a shape. */
+const hasFootprint = n => !!planOf && !!(FOOTPRINT[n.kind] || PLAN_KINDS[n.kind]);
+
+/* the four corners, turned, in world units */
+function footprintPts(n){
+  const f = footprintOf(n), ppm = doc.ppm || 8;
+  const hw = f.w*ppm/2, hd = f.d*ppm/2;
+  const a = (f.rot||0) * Math.PI/180, ca = Math.cos(a), sa = Math.sin(a);
+  return [[-hw,-hd],[hw,-hd],[hw,hd],[-hw,hd]].map(([x,y])=>({
+    x: n.x + x*ca - y*sa, y: n.y + x*sa + y*ca }));
+}
+function footprintPath(n){
+  return footprintPts(n).map((p,i)=>(i?"L":"M")+r1(p.x)+" "+r1(p.y)).join(" ") + " Z";
+}
+
 /* ══════════════════════════════════════════════════════════════
    WHAT'S INSIDE — the premises panel
 
@@ -2517,6 +2616,32 @@ function blankPremises(n){
   const use = (KINDS[n.kind] && KINDS[n.kind].svc) || "";
   return { keeper: { name:"", note:"" }, folk: [], says: [],
            stock: (STOCK_SETS[use] || []).slice(), price: 1, notes: "" };
+}
+
+function footprintPanel(n){
+  const f = footprintOf(n), u = doc.unit || "yd";
+  const base = FOOTPRINT[n.kind] || DEFAULT_FP;
+  const area = Math.round(f.w*f.d);
+  return `
+    <p class="eyebrow spaced">How big it is</p>
+    <div class="row2">
+      <div class="field"><label>Across (${esc(u)})</label><input id="fp-w" class="mono" type="number" step="0.5" min="1" max="400" value="${f.w}"></div>
+      <div class="field"><label>Deep (${esc(u)})</label><input id="fp-d" class="mono" type="number" step="0.5" min="1" max="400" value="${f.d}"></div>
+    </div>
+    <div class="field"><label>Turned (degrees)</label><input id="fp-rot" class="mono" type="number" step="5" min="0" max="359" value="${f.rot||0}"></div>
+    <div class="stat"><span class="k">Floor</span><span class="v">${area} <small>square ${esc(u)}</small></span></div>
+    <p class="empty-note" style="margin-top:8px">Drag the corner on the plan to size it, or the stalk above it to turn it. Hold <b>Shift</b> for whole ${esc(u)} and fifteen-degree steps.</p>
+    ${(n.w!=null||n.d!=null||n.rot)?`<button class="btn wide" id="fp-reset">Back to a standard ${esc((PLAN_KINDS[n.kind]||{}).label||"building").toLowerCase()} — ${base.w} × ${base.d}</button>`:""}`;
+}
+
+function wireFootprint(n){
+  if(!hasFootprint(n)) return;
+  const f = footprintOf(n);
+  numField($("#fp-w"),   { min:1, max:400, get:()=>footprintOf(n).w, set:v=>n.w=v, live:()=>render() });
+  numField($("#fp-d"),   { min:1, max:400, get:()=>footprintOf(n).d, set:v=>n.d=v, live:()=>render() });
+  numField($("#fp-rot"), { min:0, max:359, get:()=>footprintOf(n).rot||0, set:v=>n.rot=v, live:()=>render() });
+  const r = $("#fp-reset");
+  if(r) r.onclick = ()=>{ delete n.w; delete n.d; delete n.rot; touch(); renderInspect(); };
 }
 
 function premisesPanel(n){
@@ -3273,6 +3398,7 @@ function renderInspect(){
       ${SERVICES.map(g=>`<p class="grouplab">${g.group}</p><div class="checks">${
         g.items.map(([k,l])=>`<label class="check"><input type="checkbox" data-svc="${k}" ${n.services&&n.services[k]?"checked":""}> ${l}</label>`).join("")
       }</div>`).join("")}
+      ${hasFootprint(n)?footprintPanel(n):""}
       ${planOf?premisesPanel(n):""}
       ${sitePanel(n)}
       ${findsPanel(n)}
@@ -3317,6 +3443,7 @@ function renderInspect(){
       n.services=n.services||{}; n.services[e.target.dataset.svc]=e.target.checked?1:0; touch();
     });
     $("#f-rule").onclick = ()=>{ tool="rule"; rule={fromId:n.id,miles:1,ang:0,snapTo:null}; buildRail(); render(); };
+    wireFootprint(n);
     wireSite(n);
     if(planOf) wirePremises(n);
     wireFinds(n);
