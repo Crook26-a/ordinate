@@ -1428,15 +1428,41 @@ function extendOverlay(inv){
 }
 function draftOverlay(inv){
   const kd = SHAPE_KINDS[draft.kind];
-  const live = draft.pts.concat([{x:pointer.x,y:pointer.y}]);
-  let s = `<path class="hachure" d="${pathOf(live,false,drawStraight)}" stroke="${kd.stroke}" stroke-width="${2*inv}" stroke-dasharray="${6*inv} ${4*inv}"/>`;
-  for(const p of draft.pts) s += `<circle class="vh" cx="${p.x}" cy="${p.y}" r="${3.5*inv}" stroke-width="${1.2*inv}"/>`;
-  if(draft.pts.length>2){
-    const f = draft.pts[0];
-    s += `<circle class="vh ghost" cx="${f.x}" cy="${f.y}" r="${8*inv}" stroke-width="${1.4*inv}" opacity=".8"/>`;
+  const f = draft.pts[0];
+  const canClose = draft.pts.length > 2 && !kd.alwaysOpen;
+  const near = canClose && Math.hypot(pointer.x-f.x, pointer.y-f.y) < SNAP_CLOSE/view.k;
+
+  /* The outline you have LAID is drawn solid and doesn't move. Only the
+     one segment reaching for the cursor is faint. Drawing the whole
+     thing — cursor included — as one line makes the shape look like it's
+     changing every time you move the mouse, which is alarming when
+     you're trying to reach a button. */
+  let s = "";
+  if(draft.pts.length > 1)
+    s += `<path d="${pathOf(draft.pts,false,drawStraight)}" fill="none"
+            stroke="${kd.stroke}" stroke-width="${2.2*inv}" stroke-linecap="round"/>`;
+
+  const last = draft.pts[draft.pts.length-1];
+  const reach = near ? f : pointer;
+  s += `<line x1="${last.x}" y1="${last.y}" x2="${reach.x}" y2="${reach.y}"
+          stroke="${near?"var(--lead)":kd.stroke}" stroke-width="${(near?2.2:1.4)*inv}"
+          stroke-dasharray="${5*inv} ${4*inv}" opacity="${near?1:.55}" fill="none"/>`;
+
+  for(const p of draft.pts)
+    s += `<circle class="vh" cx="${p.x}" cy="${p.y}" r="${3.5*inv}" stroke-width="${1.2*inv}"/>`;
+
+  if(canClose){
+    const r = (near ? 11 : 8)*inv;
+    s += `<circle cx="${f.x}" cy="${f.y}" r="${r}" fill="var(--lead)"
+            fill-opacity="${near?0.22:0}" stroke="var(--lead)"
+            stroke-width="${(near?2:1.4)*inv}" opacity="${near?1:.7}"/>`;
+    if(near) s += `<text class="roadlabel" x="${f.x}" y="${f.y - 18*inv}" font-size="${10*inv}"
+      fill="var(--lead)">close it</text>`;
   }
   return s;
 }
+
+
 
 function renderHint(){
   const h = $("#hint");
@@ -1446,8 +1472,10 @@ function renderHint(){
     h.innerHTML = `Carrying <b>${esc((sh&&sh.name)||"the line")}</b> on from its ${editing.end==="head"?"head":"far end"} · click to lay points · <b>Backspace</b> takes one back · <b>Enter</b> or double-click stops`;
   }
   else if(draft) h.innerHTML = SHAPE_KINDS[draft.kind].alwaysOpen
-    ? `Click to lay the course · <b>Enter</b> or double-click finishes · <b>Backspace</b> undoes · <b>Esc</b> cancels`
-    : `Click to lay points · click the first point to close · <b>Enter</b> finishes open · <b>Backspace</b> undoes · <b>Esc</b> cancels`;
+    ? `Click to lay the course · <b>Finish</b> when you're done, or press <b>Enter</b>`
+    : draft.pts.length > 2
+    ? `Click the ringed first point to close it, or <b>Finish</b> to leave it open`
+    : `Click to lay points · <b>Finish</b> when you're done · three points and you can close the loop`;
   else if(tool==="draw") h.innerHTML = SHAPE_KINDS[drawKind].road
     ? `Click to run a <b>${SHAPE_KINDS[drawKind].label.toLowerCase()}</b> through the town.`
     : SHAPE_KINDS[drawKind].river
@@ -1505,6 +1533,13 @@ function buildRail(){
   s += `</div>`;
   $("#rail").innerHTML = s;
 }
+/* A focused button re-fires on Enter, which would re-pick a tool and
+   throw away the shape being drawn. Let it go as soon as it's served. */
+document.addEventListener("click", e=>{
+  const b = e.target.closest("button");
+  if(b && typeof b.blur === "function") b.blur();
+}, true);
+
 $("#rail").addEventListener("click", e=>{
   const fm = e.target.closest("[data-form]");
   if(fm){ drawForm = fm.dataset.form; draft = null; formDrag = null;
@@ -1532,6 +1567,10 @@ let spaceDown = false;
    ══════════════════════════════════════════════════════════════ */
 const COARSE = window.matchMedia && window.matchMedia("(pointer:coarse)").matches;
 const HIT = COARSE ? 22 : 9;              // grabbable radius, in screen px
+/* Closing a loop is a much bigger gesture than grabbing a handle, and
+   missing it silently adds a point instead — which reads as the shape
+   refusing to finish. Give it a target you can actually hit. */
+const SNAP_CLOSE = COARSE ? 30 : 16;
 const pointers = new Map();
 let pinch = null;                          // {d, k, mx, my, wx, wy}
 let press = null;                          // long-press timer
@@ -1734,11 +1773,15 @@ function setPanel(open){
 }
 panelToggle.onclick = ()=>setPanel(!$("#panel").classList.contains("open"));
 
-/* Enter / Backspace / Esc have no home on a phone, so give them buttons */
+/* Enter, Backspace and Escape have no home on a phone — and on a desktop
+   nobody should have to guess that they exist. While a shape is being
+   drawn there is always a visible way to finish it. */
 function renderTouchbar(){
   const tb = $("#touchbar");
   let s = "";
-  if(draft){
+  if(formDrag){
+    s = `<button class="go" data-tb="place">Place it</button><button data-tb="cancel">Cancel</button>`;
+  } else if(draft){
     s = `<button class="go" data-tb="done">Finish</button>`
       + (draft.pts.length>2 && !SHAPE_KINDS[draft.kind].alwaysOpen ? `<button data-tb="close">Close loop</button>` : "")
       + `<button data-tb="back">Undo point</button><button data-tb="cancel">Cancel</button>`;
@@ -1749,14 +1792,22 @@ function renderTouchbar(){
     s += `<button class="kill" data-tb="del">${sel.kind==="node"?"Delete marker":sel.kind==="road"?"Delete road":"Delete feature"}</button>`;
   }
   tb.innerHTML = s;
-  tb.classList.toggle("on", !!s && COARSE);
+  /* a draft or a run being extended always shows its controls; the
+     selection shortcuts stay a touch affordance, since a keyboard has
+     Delete */
+  tb.classList.toggle("on", !!s && (COARSE || !!draft || !!editing || !!formDrag));
 }
 $("#touchbar").addEventListener("click", e=>{
   const b = e.target.closest("[data-tb]"); if(!b) return;
   const a = b.dataset.tb;
-  if(a==="done")        finishDraft(false);
+  if(a==="place"){
+    const f = formDrag; formDrag = null;
+    if(f && !commitForm(f.a, f.b, f.square)) render();
+    renderTouchbar();
+  }
+  else if(a==="done")   finishDraft(false);
   else if(a==="close")  finishDraft(true);
-  else if(a==="cancel"){ draft=null; render(); }
+  else if(a==="cancel"){ draft=null; formDrag=null; render(); renderTouchbar(); }
   else if(a==="stop"){   editing=null; render(); renderPane(true); }
   else if(a==="back"){
     if(draft){ draft.pts.pop(); if(!draft.pts.length) draft=null; render(); }
@@ -1837,9 +1888,17 @@ svg.addEventListener("pointerdown", e=>{
     editing = null;
   }
 
+  /* a regular form, click-click: the second press sets the far corner */
+  if(formDrag && formDrag.armed && e.button===0 && !spaceDown){
+    formDrag.b = {x:w.x, y:w.y}; formDrag.square = e.shiftKey;
+    formDrag.sx = e.clientX; formDrag.sy = e.clientY;
+    render(); return;
+  }
+
   /* a regular form: drag out the size and let go */
   if(tool==="draw" && drawForm !== "free" && e.button===0 && !spaceDown && !draft){
-    formDrag = { a:{x:w.x,y:w.y}, b:{x:w.x,y:w.y}, square:e.shiftKey };
+    formDrag = { a:{x:w.x,y:w.y}, b:{x:w.x,y:w.y}, square:e.shiftKey,
+                 sx:e.clientX, sy:e.clientY, armed:false };
     render(); return;
   }
 
@@ -1850,7 +1909,7 @@ svg.addEventListener("pointerdown", e=>{
       noteLaid(()=>{ draft=null; });
     } else {
       const f = draft.pts[0];
-      if(!SHAPE_KINDS[draft.kind].alwaysOpen && draft.pts.length>2 && Math.hypot(w.x-f.x,w.y-f.y) < HIT/view.k) finishDraft(true);
+      if(!SHAPE_KINDS[draft.kind].alwaysOpen && draft.pts.length>2 && Math.hypot(w.x-f.x,w.y-f.y) < SNAP_CLOSE/view.k) finishDraft(true);
       else { draft.pts.push({x:Math.round(w.x),y:Math.round(w.y)}); noteLaid(()=>{ draft && draft.pts.pop(); }); }
     }
     render(); return;
@@ -1934,7 +1993,13 @@ svg.addEventListener("pointermove", e=>{
       drag.moved = true; render(); return;
     }
   }
-  if(formDrag){ formDrag.b = {x:pointer.x, y:pointer.y}; formDrag.square = e.shiftKey; render(); return; }
+  if(formDrag){
+    /* follow while the button is held, or while armed and waiting for a
+       second click — never while nothing is happening */
+    if(e.buttons === 0 && !formDrag.armed){ formDrag = null; render(); renderTouchbar(); return; }
+    formDrag.b = {x:pointer.x, y:pointer.y}; formDrag.square = e.shiftKey;
+    render(); return;
+  }
   if(tool==="draw" && draft){ render(); return; }
   if(editing){ render(); return; }
   if(tool==="rule" && rule){ aimRule(e.shiftKey, e.altKey); render(); }
@@ -1945,6 +2010,33 @@ function endPointer(e){
   pointers.delete(e.pointerId);
   if(pointers.size<2) pinch = null;
   clearPress();
+
+  /* A form being dragged out. Two ways to place one, because a mouse
+     drag and a phone tap want different things: drag far enough and
+     lifting commits it; barely move and it stays live, so the next click
+     sets the far corner. Either way it MUST be released here — left
+     alive it tracks the pointer with no button down, and the shape
+     resizes forever with no way to finish it. */
+  if(formDrag){
+    const moved = Math.hypot(e.clientX - (formDrag.sx ?? e.clientX),
+                             e.clientY - (formDrag.sy ?? e.clientY));
+    if(moved >= 6){
+      const f = formDrag; formDrag = null;
+      if(!commitForm(f.a, f.b, f.square)) render();
+      renderTouchbar();
+      return;
+    }
+    if(formDrag.armed){                 // second click: that's the far corner
+      const f = formDrag; formDrag = null;
+      if(!commitForm(f.a, f.b, f.square)) render();
+      renderTouchbar();
+      return;
+    }
+    formDrag.armed = true;              // stay live, waiting for the next click
+    render(); renderTouchbar();
+    return;
+  }
+
   if(drag){
     if(drag.mode==="aim"){ fixDistance(); drag=null; svg.classList.remove("panning"); return; }
     if(drag.mode==="node" && drag.moved){ recomputeUnlocked(drag.id); touch(); }
@@ -2003,7 +2095,14 @@ document.addEventListener("keydown", e=>{
   if(e.code==="Space"){ spaceDown=true; e.preventDefault(); return; }
   const k = e.key.toLowerCase();
   if(placing){ if(k==="escape") closePop(); return; }
-  if(formDrag && k==="escape"){ formDrag=null; render(); return; }
+  if(formDrag){
+    if(e.key==="Enter"){
+      const f = formDrag; formDrag = null;
+      if(!commitForm(f.a, f.b, f.square)) render();
+      renderTouchbar(); e.preventDefault(); return;
+    }
+    if(k==="escape"){ formDrag=null; render(); renderTouchbar(); return; }
+  }
   if(draft){
     if(e.key==="Enter"){ finishDraft(false); e.preventDefault(); return; }
     if(e.key==="Backspace"){ draft.pts.pop(); if(!draft.pts.length) draft=null; render(); e.preventDefault(); return; }
