@@ -2963,7 +2963,7 @@ function findsPanel(n){
         <div class="row2">
           <div class="field"><label>Experience</label><input data-fdxp="${i}" class="mono" type="number" min="0" max="500" step="5" value="${(f.gives&&f.gives.xp)||0}"></div>
           <div class="field"><label>Purse</label><select data-fdcoin="${i}">${
-            PURSES.map(p=>`<option value="${p.cat}" ${p.cat===((f.gives&&f.gives.coin)||0)?"selected":""}>${p.cat?p.cat+" · "+p.name:"No coin"}</option>`).join("")
+            PURSES.map(p=>`<option value="${p.cat}" ${p.cat===((f.gives&&f.gives.purse)||0)?"selected":""}>${p.cat?p.cat+" · "+p.name:"No coin"}</option>`).join("")
           }</select></div>
         </div>
         <div class="checks" style="grid-template-columns:1fr 1fr">
@@ -3014,7 +3014,15 @@ function wireFinds(n){
     const i = el.dataset.fdxp;
     numField(el, { min:0, max:500, get:()=>G(i).xp||0, set:v=>G(i).xp=v });
   });
-  pane.querySelectorAll("[data-fdcoin]").forEach(el=>el.onchange = e=>{ G(e.target.dataset.fdcoin).coin = +e.target.value; touch(); });
+  pane.querySelectorAll("[data-fdcoin]").forEach(el=>el.onchange = e=>{
+    const g = G(e.target.dataset.fdcoin);
+    const v = +e.target.value;
+    /* `purse` is a category the game rolls. `coin` would be raw copper,
+       which is not what this dropdown means. */
+    if(v) g.purse = v; else delete g.purse;
+    delete g.coin;
+    touch();
+  });
   pane.querySelectorAll("[data-fdflag]").forEach(el=>el.oninput = e=>{ G(e.target.dataset.fdflag).flag = e.target.value.trim(); touch(); });
   pane.querySelectorAll("[data-fdonce]").forEach(el=>el.onchange = e=>{ F(e.target.dataset.fdonce).once = e.target.checked; touch(); });
   pane.querySelectorAll("[data-fdt]").forEach(el=>{
