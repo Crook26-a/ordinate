@@ -1,0 +1,16 @@
+{
+  "name": "Ordinate Survey",
+  "short_name": "Survey",
+  "description": "The plotting table. Lay out a country in roads and stones, and price what it's worth.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#e5d7b4",
+  "theme_color": "#eee3c7",
+  "icons": [
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "./icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
