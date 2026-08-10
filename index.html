@@ -742,10 +742,27 @@ function surveyWorth(){
 /* ══════════════════════════════════════════════════════════════
    STATE
    ══════════════════════════════════════════════════════════════ */
-let doc = blankDoc();
+/* ══════════════════════════════════════════════════════════════
+   WHICH DOCUMENT YOU ARE IN
+
+   There is exactly one survey, held in `root`, and it is never a town
+   plan. `doc` is whatever is on screen — the survey, or one of the
+   plans. `planOf` is the id of the marker whose plan that is, or null.
+
+   The rule that makes the last three bugs impossible: planOf is NEVER
+   assigned. It is derived, inside setDoc(), from the identity of the
+   document itself. There is no code path that can change one without
+   the other, because there is only one path.
+
+   Plans are one level deep — a plan is entered from a survey marker and
+   nothing else — so there is no stack to come apart either.
+   ══════════════════════════════════════════════════════════════ */
+let root = blankDoc();         // the survey. always the survey.
+let doc  = root;               // what's on screen
+let planReturn = null;         // view and tool to restore on the way out
 let plans = {};                // nodeId -> a plan document, each saved under its own key
-let planOf = null;             // the marker whose plan we're standing inside
-let planStack = [];            // how to get back out
+let planOf = null;             // DERIVED by setDoc. never assign this.
+
 
 /* a town plan is the same kind of document as the survey, only closer in.
    Because every tool reads from the global `doc`, stepping inside a plan is
@@ -779,39 +796,50 @@ function normaliseDoc(d){
 const UNIT = ()=>doc.unit||"mi";
 const hasPlan = id=>!!plans[id];
 
+/* The only way the current document changes. Everything that depends on
+   which document you're in is recomputed here, together, so it cannot
+   drift: the plan id, which marker and shape vocabularies are in force,
+   and the scale box. */
+function setDoc(next){
+  doc = next;
+  planOf = null;
+  for(const k in plans) if(plans[k] === doc){ planOf = k; break; }
+  KINDS = planOf ? PLAN_KINDS : SURVEY_KINDS; KIND_KEYS = Object.keys(KINDS);
+  SHAPE_KINDS = planOf ? PLAN_SHAPES : SURVEY_SHAPES; SHAPE_KEYS = Object.keys(SHAPE_KINDS);
+  try{ $("#ppm").value = doc.ppm; }catch(err){}
+  return doc;
+}
+/* Replace the survey wholesale — a load, a shelf restore, a fresh start. */
+function setRoot(next){
+  root = normaliseDoc(next);
+  return setDoc(root);
+}
+const surveyDoc = () => root;
+
 function enterPlan(nodeId){
   const n = nodeById(nodeId); if(!n) return;
-  /* Already in it. Nesting a plan inside itself makes planStack[0].doc
-     the plan rather than the survey, and from then on "leaving" hands
-     the plan back as if it were the survey. */
-  if(planOf === nodeId) return;
-  if(planOf) leavePlanAll();
+  if(planOf === nodeId) return;                  // already standing in it
+  if(planOf) leavePlan();                        // never nest
   if(!plans[nodeId]) plans[nodeId] = blankPlan(n);
-  planStack.push({ doc, view:{...view}, sel, tool, planOf, drawKind });
-  doc = normaliseDoc(plans[nodeId]);
+  planReturn = { view:{...view}, sel, tool, drawKind };
+  setDoc(normaliseDoc(plans[nodeId]));
   doc.title = n.name || doc.title;
-  planOf = nodeId;
-  KINDS = PLAN_KINDS; KIND_KEYS = Object.keys(KINDS);
-  SHAPE_KINDS = PLAN_SHAPES; SHAPE_KEYS = Object.keys(SHAPE_KINDS);
-  sel = null; rule = null; draft = null; editing = null; connectFrom = null;
+  sel = null; rule = null; draft = null; editing = null; connectFrom = null; formDrag = null;
   tool = "select"; drawKind = "block";
-  $("#ppm").value = doc.ppm;
   markDirty(K_PLAN(nodeId));
   resetHist();
   buildRail(); centreView(); renderCrumb(); renderPane(true);
   revealInspector(false);
 }
 function leavePlan(){
-  if(!planStack.length) return;
-  if(planOf) syncServices(planOf);
+  if(!planOf) return;
+  syncServices(planOf);
   markDirty(K_PLAN(planOf));
-  const prev = planStack.pop();
-  doc = prev.doc; view = prev.view; planOf = prev.planOf;
-  KINDS = planOf ? PLAN_KINDS : SURVEY_KINDS; KIND_KEYS = Object.keys(KINDS);
-  SHAPE_KINDS = planOf ? PLAN_SHAPES : SURVEY_SHAPES; SHAPE_KEYS = Object.keys(SHAPE_KINDS);
-  sel = prev.sel; tool = prev.tool; drawKind = prev.drawKind;
-  rule = null; draft = null; editing = null; connectFrom = null;
-  $("#ppm").value = doc.ppm;
+  setDoc(root);
+  const prev = planReturn; planReturn = null;
+  if(prev){ view = prev.view; sel = prev.sel; tool = prev.tool; drawKind = prev.drawKind; }
+  else { sel = null; tool = "select"; }
+  rule = null; draft = null; editing = null; connectFrom = null; formDrag = null;
   resetHist();
   buildRail(); applyTransform(); renderCrumb(); render(); renderPane(true);
 }
@@ -820,7 +848,7 @@ function leavePlan(){
    pulling the last one down unticks it — the two views never disagree */
 function syncServices(nodeId){
   const plan = plans[nodeId]; if(!plan) return;
-  const outer = planStack.length ? planStack[0].doc : doc;
+  const outer = root;
   const n = (outer.nodes||[]).find(x=>x.id===nodeId); if(!n) return;
   n.services = n.services||{};
   plan.sited = plan.sited||{};                     // what this plan has vouched for
@@ -854,12 +882,12 @@ function renderBarLabels(){
 function renderCrumb(){
   renderBarLabels();
   const el = $("#crumb");
-  if(!planStack.length){ el.innerHTML = ""; el.hidden = true; return; }
+  if(!planOf){ el.innerHTML = ""; el.hidden = true; return; }
   el.hidden = false;
-  const outer = planStack[0].doc;
+  const outer = root;
   el.innerHTML = `<button id="crumbUp" title="Back out to the survey">${esc(outer.title||"The survey")}</button>`
     + `<span class="sep">›</span><span class="here">${esc(doc.title||"plan")}</span>`;
-  $("#crumbUp").onclick = ()=>{ while(planStack.length) leavePlan(); };
+  $("#crumbUp").onclick = ()=>{ leavePlan(); };
 }
 let view = { tx:0, ty:0, k:1 };
 let tool = "rule";
@@ -1709,12 +1737,11 @@ function pushUndo(){
 function applySnap(sn){
   const d = normaliseDoc(JSON.parse(sn.json));
   if(sn.key===K_SURVEY){
-    if(planStack.length) planStack[0].doc = d; else doc = d;
+    if(planOf) root = d; else setDoc(d);
   } else {
     plans[sn.key.slice(5)] = d;
-    if(planOf===sn.key.slice(5)) doc = d;
+    if(planOf===sn.key.slice(5)) setDoc(d);
   }
-  if(!planStack.length || planOf) { /* doc may have been replaced */ }
   sel = null; rule = null; draft = null; editing = null; connectFrom = null;
   lastSnap = snapshot(); lastSnapAt = 0;
   $("#ppm").value = doc.ppm;
@@ -2251,8 +2278,8 @@ async function refreshShelf(){
    came from one, so saving twice doesn't breed copies. */
 async function shelveCurrent(name, forceNew){
   if(!USE_IDB) return null;
-  const outer = planStack.length ? planStack[0].doc : doc;
-  if(!outer || !(outer.nodes||[]).length) return null;
+  if(!root || !(root.nodes||[]).length) return null;
+  const outer = root;
   const id = (!forceNew && outer.libId) || uid("m");
   outer.libId = id;
   const rec = { name: (name || outer.title || "Untitled").trim(),
@@ -2267,7 +2294,7 @@ async function shelveCurrent(name, forceNew){
 
 /* Called before anything destructive. Silent, and always safe to call. */
 async function shelveBeforeReplacing(){
-  const outer = planStack.length ? planStack[0].doc : doc;
+  const outer = root;
   if(!USE_IDB || !outer || !(outer.nodes||[]).length) return false;
   const stamp = new Date().toISOString().slice(0,16).replace("T"," ");
   const name = outer.libId ? (outer.title || "Untitled")
@@ -2285,8 +2312,8 @@ async function loadFromShelf(id){
   leavePlanAll();
   for(const k of Object.keys(plans)) delete plans[k];
   Object.assign(plans, JSON.parse(JSON.stringify(rec.plans || {})));
-  doc = normaliseDoc(JSON.parse(JSON.stringify(rec.doc)));
-  doc.libId = id;
+  setRoot(JSON.parse(JSON.stringify(rec.doc)));
+  root.libId = id;
   sel = null; rule = null; draft = null; formDrag = null;
   markDirty(K_SURVEY);
   for(const k of Object.keys(plans)) markDirty(K_PLAN(k));
@@ -2315,54 +2342,28 @@ async function renameOnShelf(id, name){
 
 /* Climb out of every plan, so a load never lands inside a town that no
    longer exists. */
-function leavePlanAll(){
-  while(planStack.length) leavePlan();
-  surfaceToSurvey();
-}
+function leavePlanAll(){ leavePlan(); }
 
 /* ── the escape hatch ─────────────────────────────────────────
-   planOf, planStack and doc have to agree: inside a plan, doc must BE
-   plans[planOf]. If they ever come apart — an interrupted load, a
-   restore that landed halfway — the screen draws one document's shapes
-   over another's markers, and there is no gesture that fixes it because
-   every gesture assumes they agree.
-
-   So: check, and if they don't, put everything back on the survey. */
-function surveyDoc(){
-  return planStack.length ? planStack[0].doc : (planOf ? null : doc);
-}
+   Kept as a button because it costs nothing and reassures, but it can
+   no longer be NEEDED: planOf is derived from doc inside setDoc(), so
+   there is no state in which they disagree. This just walks out of a
+   plan the ordinary way. */
 function viewIsConsistent(){
-  if(!planOf) return !planStack.length;
-  return planStack.length > 0 && doc === plans[planOf];
+  return planOf ? plans[planOf] === doc : doc === root;
 }
-/* A survey whose unit is yards, or which carries a plan's shapes, has
-   been contaminated by a town plan. Say so rather than draw it. */
-function surveyLooksWrong(){
-  if(planOf) return null;
-  if((doc.unit||"mi") !== "mi" && (doc.roads||[]).length) return "unit";
-  const planShapes = new Set();
-  for(const k in plans) for(const s of (plans[k].shapes||[])) planShapes.add(s.id);
-  if((doc.shapes||[]).some(s => planShapes.has(s.id))) return "shapes";
-  return null;
+function surfaceToSurvey(){
+  if(planOf) leavePlan(); else setDoc(root);
+  sel = null; rule = null; draft = null; editing = null; connectFrom = null; formDrag = null;
+  tool = "select";
+  resetHist(); buildRail(); renderCrumb();
 }
-function repairSurvey(){
-  const planShapes = new Set();
-  for(const k in plans) for(const s of (plans[k].shapes||[])) planShapes.add(s.id);
-  const before = (doc.shapes||[]).length;
-  doc.shapes = (doc.shapes||[]).filter(s => !planShapes.has(s.id));
-  const removed = before - doc.shapes.length;
-  if((doc.unit||"mi") !== "mi"){ doc.unit = "mi"; doc.ppm = doc.ppm < 3 ? 10 : doc.ppm; }
-  markDirty(K_SURVEY); touch(); render(); renderPane(true);
-  try{ $("#ppm").value = doc.ppm; }catch(err){}
-  flash(removed ? `Put ${removed} town shape${removed===1?"":"s"} back where they belong.`
-                : "Survey put back in miles.");
-}
+
 
 function surfaceToSurvey(){
-  const outer = planStack.length ? planStack[0].doc : (planOf ? null : doc);
-  planStack.length = 0;
+  const outer = root;
   planOf = null;
-  if(outer) doc = normaliseDoc(outer);
+
   KINDS = SURVEY_KINDS; KIND_KEYS = Object.keys(KINDS);
   SHAPE_KINDS = SURVEY_SHAPES; SHAPE_KEYS = Object.keys(SHAPE_KINDS);
   sel = null; rule = null; draft = null; editing = null; connectFrom = null; formDrag = null;
@@ -2761,8 +2762,8 @@ function premisesPanel(n){
 }
 
 function planParentName(){
-  if(!planOf || !planStack.length) return "this place";
-  const outer = planStack[0].doc;
+  if(!planOf) return "this place";
+  const outer = root;
   const n = (outer.nodes||[]).find(x=>x.id===planOf);
   return n ? (n.name || "this place") : "this place";
 }
@@ -3339,7 +3340,7 @@ function refreshVerdict(n){
 function renderInspect(){
   const el = $("#pane-inspect");
   if(!sel && planOf){
-    const outer = planStack.length ? planStack[0].doc : doc;
+    const outer = root;
     const n = (outer.nodes||[]).find(x=>x.id===planOf);
     const sited = new Set();
     for(const b of doc.nodes){ const kd=PLAN_KINDS[b.kind]; if(kd&&kd.svc) sited.add(kd.svc); }
@@ -3663,7 +3664,7 @@ function renderLedger(){
     ${KIND_KEYS.filter(k=>counts[k]).map(k=>`<div class="stat"><span class="k">${KINDS[k].label}</span><span class="v">${counts[k]}</span></div>`).join("")||`<p class="empty-note">None yet.</p>`}
     ${planOf ? (()=>{
       const prov = planProvides(planOf) || {};
-      const outer = planStack.length ? planStack[0].doc : null;
+      const outer = root;
       const parent = outer ? (outer.nodes||[]).find(x=>x.id===planOf) : null;
       const have = (parent && parent.services) || {};
       const drawn = Object.keys(prov);
@@ -3750,7 +3751,7 @@ function renderRegions(){
   $("#compassSel").onchange = e=>{ doc.compass = +e.target.value; touch(); renderRegions(); };
   const sync = $("#pl-sync");
   if(sync) sync.onclick = ()=>{
-    const outer = planStack.length ? planStack[0].doc : null;
+    const outer = root;
     const parent = outer ? (outer.nodes||[]).find(x=>x.id===planOf) : null;
     if(!parent) return;
     const prov = planProvides(planOf) || {};
@@ -3773,8 +3774,17 @@ function renderRegions(){
 function renderData(){
   const here = doc.libId;
   $("#pane-data").innerHTML = `
-    ${surveyLooksWrong() ? `<p class="warn">This survey has a town plan's ${surveyLooksWrong()==="unit"?"units":"shapes"} in it — that's a leak, not something you drew.
-      <button class="btn wide" id="d-repair" style="margin-top:8px">Put them back where they belong</button></p>` : ""}
+        ${(()=>{
+      /* A plan that has markers and no outlines at all usually means
+         something removed them. Offer the ground back. */
+      const thin = Object.keys(plans).filter(k =>
+        (plans[k].nodes||[]).length > 3 && !(plans[k].shapes||[]).some(s => s.closed));
+      if(!thin.length) return "";
+      const names = thin.map(k => { const n = root.nodes.find(x=>x.id===k);
+        return esc((n&&n.name) || "a plan"); });
+      return `<p class="warn">${names.join(", ")} ${thin.length===1?"has":"have"} buildings but no squares or greens drawn.
+        If something removed them, the <b>Square</b> form under Draw puts one back in a drag.</p>`;
+    })()}
     <p class="eyebrow">If something looks wrong</p>
     <p class="empty-note" style="margin:0 0 9px">If the screen is drawing a town's shapes over the survey's markers, or the other way about, this puts everything back on the survey. Nothing is lost — every town plan stays where it is.</p>
     <button class="btn wide" id="d-surface">Back to the survey</button>
@@ -3828,13 +3838,10 @@ function renderData(){
     await shelveBeforeReplacing();
     leavePlanAll();
     for(const k of Object.keys(plans)) delete plans[k];
-    doc = blankDoc(); sel=null; rule=null; draft=null; formDrag=null;
+    setRoot(blankDoc()); sel=null; rule=null; draft=null; formDrag=null;
     touch(); centreView(); renderPane(true);
     flash("New survey. The old one is on the shelf.");
   };
-
-  const rep = $("#d-repair");
-  if(rep) rep.onclick = ()=>{ repairSurvey(); renderPane(true); };
 
   const surf = $("#d-surface");
   if(surf) surf.onclick = ()=>{
@@ -3901,11 +3908,11 @@ function loadJSONNow(text){
   let d;
   try{ d = JSON.parse(text); } catch(err){ flash("That isn't valid JSON."); return; }
   if(!d||!Array.isArray(d.nodes)||!Array.isArray(d.roads)){ flash("No nodes and roads in that file."); return; }
-  while(planStack.length) leavePlan();                     // never load in on top of a plan
-  doc = { format:"ordinate-survey-v1", title:d.title||"Untitled survey", ppm:d.ppm||10, compass:d.compass||8,
+  leavePlan();                     // never load in on top of a plan
+  setRoot({ format:"ordinate-survey-v1", title:d.title||"Untitled survey", ppm:d.ppm||10, compass:d.compass||8,
           unit:d.unit||"mi",
           regions:(Array.isArray(d.regions)&&d.regions.length)?d.regions:DEFAULT_REGIONS.map(r=>({...r})),
-          nodes:d.nodes, roads:d.roads, shapes:Array.isArray(d.shapes)?d.shapes:[] };
+          nodes:d.nodes, roads:d.roads, shapes:Array.isArray(d.shapes)?d.shapes:[] });
   for(const k in plans){ delete plans[k]; markDirty(K_PLAN(k)); }
   let np = 0;
   if(d.plans && typeof d.plans==="object")
@@ -4053,21 +4060,10 @@ function currentKey(){ return planOf ? K_PLAN(planOf) : K_SURVEY; }
 function bundleForLegacy(){ return exportBundle(); }
 /* what leaves the app: the survey with every drawn plan folded in */
 function exportBundle(){
-  /* If planOf is set the current doc is a TOWN PLAN, and exporting it as
-     the survey would hand back a file whose "survey" is a street map —
-     ppm in yards, a market square among the terrain, and every real
-     place gone. Take the outer document, and if the stack has come
-     apart, refuse to guess. */
-  let outer = planStack.length ? planStack[0].doc : doc;
-  if(planOf && !planStack.length){
-    const known = Object.keys(plans).find(k => plans[k] === doc);
-    if(known){                                     // doc is a plan with no stack
-      flash("The view had come apart — put back on the survey before exporting.");
-      surfaceToSurvey(); render(); renderPane(true);
-      outer = doc;
-    }
-  }
-  return Object.assign({}, outer, { plans });
+  /* Always the survey with every plan folded in, wherever you happen to
+     be standing. `root` is the survey by construction, so there is
+     nothing to work out and nothing to get wrong. */
+  return Object.assign({}, root, { plans });
 }
 
 async function boot(){
@@ -4106,8 +4102,7 @@ async function boot(){
   await refreshShelf();
   if(loaded){
     if(loaded.plans){ Object.assign(plans, loaded.plans); delete loaded.plans; }
-    doc = normaliseDoc(loaded);
-    $("#ppm").value = doc.ppm;
+    setRoot(loaded);
   }
   centreView(); renderCrumb(); resetHist();
   $("#saveState").textContent = doc.nodes.length ? "saved" : "new survey";
