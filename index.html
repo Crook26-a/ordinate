@@ -3313,7 +3313,7 @@ function sitePanel(n){
 
     <p class="grouplab">What they're sitting on</p>
     <div class="field"><label>Purse</label><select id="st-coin">${PURSES.map(p=>
-      `<option value="${p.cat}" ${p.cat===(st.loot&&st.loot.coin||0)?"selected":""}>${p.cat?`${p.cat} · ${p.name} — ${p.dice}`:"No coin"}</option>`).join("")}</select></div>
+      `<option value="${p.cat}" ${p.cat===((st.loot&&(st.loot.purse??st.loot.coin))||0)?"selected":""}>${p.cat?`${p.cat} · ${p.name} — ${p.dice}`:"No coin"}</option>`).join("")}</select></div>
     <div class="checks" style="grid-template-columns:1fr 1fr">
       ${[1,2,3,4].map(t=>`<div class="field" style="margin-bottom:8px"><label>Tier ${t}</label>
         <input id="st-t${t}" class="mono" type="number" min="0" max="9" value="${(st.loot&&st.loot["t"+t])||0}"></div>`).join("")}
@@ -3369,7 +3369,14 @@ function wireSite(n){
   });
   $("#st-addfoe").onclick = ()=>{ (st.foes=st.foes||[]).push({id:"bandit",n:1}); re(); };
 
-  $("#st-coin").onchange = e=>{ (st.loot=st.loot||{}).coin = +e.target.value; touch(); };
+  $("#st-coin").onchange = e=>{
+    const L = (st.loot = st.loot || {});
+    const v = +e.target.value;
+    /* one spelling only. `purse` is the category the game rolls. */
+    if(v) L.purse = v; else delete L.purse;
+    delete L.coin;
+    touch();
+  };
   for(const t of [1,2,3,4]){
     numField($("#st-t"+t), { min:0, max:9,
       get:()=>(st.loot&&st.loot["t"+t])||0,
